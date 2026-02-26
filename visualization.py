@@ -588,7 +588,7 @@ class App:
             for _ in range(10):
                 if len(self.pop) > 1:
                     a, b = random.sample(self.pop, 2)
-                    pygame.draw.line(self.screen, (40,50,60), (a.x, a.y), (b.x, b.y), 1)
+                    pygame.draw.line(self.screen, TEXT_WHITE, (a.x, a.y), (b.x, b.y), 1)
                 
             tt = fonts['lg'].render(f"Observing Generation {self.tourn_gen}...", True, GOLD)
             self.screen.blit(tt, tt.get_rect(center=(grid_r.centerx, grid_r.bottom - H*0.08)))
