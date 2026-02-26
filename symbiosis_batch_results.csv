@@ -1,0 +1,11 @@
+Strategy,Average Final Population (50 Max),Min Pop,Max Pop
+GenerousTitForTat,24.45,0,45
+TitForTat,9.59,0,44
+TitForTwoTats,9.04,0,30
+SoftMajority,4.01,0,16
+Gradual,2.45,0,43
+Random,0.23,0,14
+Detective,0.11,0,5
+Pavlov,0.05,0,2
+SuspiciousTitForTat,0.03,0,4
+Grudger,0.02,0,2
