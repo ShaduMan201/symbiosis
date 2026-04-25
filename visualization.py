@@ -284,9 +284,13 @@ class App:
         self.tourn_tstate = "PLAYING"
         self.tourn_timer = 0.0
         self.tombstones = []
-        self.btn_t_ff = Button(W*0.77, H*0.03, W*0.1, H*0.04, "NEXT GEN >>", BG_CARD)
-        self.btn_t_finish = Button(W*0.89, H*0.03, W*0.09, H*0.04, "FINISH", C_NASTY_1, text_color=BG_DARK)
+        self.btn_t_pause = Button(W*0.60, H*0.03, W*0.10, H*0.04, "PAUSE", BG_CARD)
+        self.btn_t_ff = Button(W*0.72, H*0.03, W*0.1, H*0.04, "NEXT GEN >>", BG_CARD)
+        self.btn_t_finish = Button(W*0.84, H*0.03, W*0.09, H*0.04, "FINISH", C_NASTY_1, text_color=BG_DARK)
         self.btn_main_menu = Button(W*0.4, H*0.86, W*0.2, H*0.08, "MAIN MENU", GOLD, text_color=BG_DARK)
+        self.tourn_inspect_sel = []
+        self.faceoff_from_tournament = False
+        self.tourn_frozen_lines = []  # cached connection lines for freeze-on-pause
 
     # ── States ───────────────────────────────────────────────────────────────
     def _draw_menu(self):
@@ -396,6 +400,20 @@ class App:
         self.fo_history = [(0,0)]
         self.state = "FACEOFF"
         self.fo_paused = False
+        self.faceoff_from_tournament = False
+
+    def _start_faceoff_from_tourn(self, agent_a, agent_b):
+        """Launch a faceoff directly from two TAgent objects (used during inspect)."""
+        m1 = STRATEGY_META[agent_a.meta_idx]
+        m2 = STRATEGY_META[agent_b.meta_idx]
+        self.charA = {'ag': m1[0](), 'col': m1[3], 'nm': m1[2], 'sc': 0, 'st': 'IDLE', 'act': None}
+        self.charB = {'ag': m2[0](), 'col': m2[3], 'nm': m2[2], 'sc': 0, 'st': 'IDLE', 'act': None}
+        self.fo_round = 0
+        self.fo_anim_t = 0.0
+        self.fo_history = [(0, 0)]
+        self.fo_paused = False
+        self.faceoff_from_tournament = True
+        self.state = "FACEOFF"
 
     def _play_fo_round(self):
         ia, ib = self.charA['ag'].choose_move(), self.charB['ag'].choose_move()
@@ -524,6 +542,9 @@ class App:
         self.tourn_gen = 1
         self.tourn_tstate = "PLAYING"
         self.tourn_timer = 0.0
+        self.tourn_paused = False
+        self.tourn_inspect_sel = []
+        self.tourn_frozen_lines = []
         self.tombstones = []
         self.state = "TOURNAMENT"
         self.tourn_math_queue = []
@@ -531,8 +552,12 @@ class App:
         self.tourn_total_points = {i: 0 for i in range(12)}
 
     def _draw_tournament(self, dt):
+        if self.tourn_paused:
+            dt = 0.0
         self.screen.fill(BG_DARK)
         self.btn_back.draw(self.screen)
+        self.btn_t_pause.text = "RESUME" if self.tourn_paused else "PAUSE"
+        self.btn_t_pause.draw(self.screen)
         self.btn_t_ff.draw(self.screen)
         self.btn_t_finish.draw(self.screen)
         
@@ -585,11 +610,30 @@ class App:
         if self.tourn_tstate == "PLAYING":
             for p in self.pop:
                 p.state = "IDLE"; p.update(dt); p.draw(self.screen)
-            for _ in range(10):
-                if len(self.pop) > 1:
-                    a, b = random.sample(self.pop, 2)
-                    pygame.draw.line(self.screen, TEXT_WHITE, (a.x, a.y), (b.x, b.y), 1)
-                
+            if not self.tourn_paused:
+                # Refresh the frozen-line cache each live frame
+                self.tourn_frozen_lines = []
+                for _ in range(10):
+                    if len(self.pop) > 1:
+                        a, b = random.sample(self.pop, 2)
+                        self.tourn_frozen_lines.append(((a.x, a.y), (b.x, b.y)))
+            # Always draw from cache — live frames just rebuilt it; paused frames reuse it
+            for pa, pb in self.tourn_frozen_lines:
+                pygame.draw.line(self.screen, TEXT_WHITE, pa, pb, 1)
+
+            # ── Inspect mode: gold rings on selected agents ───────────────
+            if self.tourn_paused:
+                agent_r = int(H * 0.015)
+                for sel in self.tourn_inspect_sel:
+                    pygame.draw.circle(self.screen, GOLD, (int(sel.x), int(sel.y)), agent_r + 5, 3)
+                if len(self.tourn_inspect_sel) == 0:
+                    hint = fonts['sm'].render("PAUSED  —  click any two agents to inspect a faceoff", True, GOLD)
+                elif len(self.tourn_inspect_sel) == 1:
+                    hint = fonts['sm'].render("Select one more agent to start the faceoff", True, GOLD)
+                else:
+                    hint = fonts['sm'].render("", True, GOLD)
+                self.screen.blit(hint, hint.get_rect(center=(grid_r.centerx, grid_r.bottom - H*0.04)))
+
             tt = fonts['lg'].render(f"Observing Generation {self.tourn_gen}...", True, GOLD)
             self.screen.blit(tt, tt.get_rect(center=(grid_r.centerx, grid_r.bottom - H*0.08)))
             
@@ -810,7 +854,12 @@ class App:
                     self.sl_noise.handle(ev)
                         
                 elif self.state == "FACEOFF":
-                    if self.btn_back.clicked(ev): self.state = "FACEOFF_SEL"
+                    if self.btn_back.clicked(ev):
+                        if self.faceoff_from_tournament:
+                            self.faceoff_from_tournament = False
+                            self.state = "TOURNAMENT"
+                        else:
+                            self.state = "FACEOFF_SEL"
                     
                     if self.btn_s_dn.clicked(ev): self.fo_speed = max(0.5, self.fo_speed - 0.5)
                     if self.btn_s_up.clicked(ev): self.fo_speed = min(5.0, self.fo_speed + 0.5)
@@ -867,6 +916,29 @@ class App:
                         else:
                             self.state = "PODIUM"
                             self.tourn_timer = 0.0
+
+                    if self.btn_t_pause.clicked(ev):
+                        self.tourn_paused = not self.tourn_paused
+                        self.tourn_inspect_sel = []  # clear selection on toggle
+
+                    # ── Agent inspection clicks while paused ──────────────
+                    if (self.tourn_paused and self.tourn_tstate == "PLAYING"
+                            and ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1):
+                        agent_r = int(H * 0.015)
+                        mx, my = ev.pos
+                        for p in self.pop:
+                            if math.hypot(p.x - mx, p.y - my) <= agent_r + 6:
+                                if p in self.tourn_inspect_sel:
+                                    self.tourn_inspect_sel.remove(p)
+                                elif len(self.tourn_inspect_sel) < 2:
+                                    self.tourn_inspect_sel.append(p)
+                                if len(self.tourn_inspect_sel) == 2:
+                                    self._start_faceoff_from_tourn(
+                                        self.tourn_inspect_sel[0],
+                                        self.tourn_inspect_sel[1]
+                                    )
+                                    self.tourn_inspect_sel = []
+                                break
 
                     if self.btn_t_ff.clicked(ev):
                         if self.tourn_tstate == "PLAYING": self.tourn_timer = 4.0
