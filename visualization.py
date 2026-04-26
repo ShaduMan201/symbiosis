@@ -287,10 +287,22 @@ class App:
         self.btn_t_pause = Button(W*0.60, H*0.03, W*0.10, H*0.04, "PAUSE", BG_CARD)
         self.btn_t_ff = Button(W*0.72, H*0.03, W*0.1, H*0.04, "NEXT GEN >>", BG_CARD)
         self.btn_t_finish = Button(W*0.84, H*0.03, W*0.09, H*0.04, "FINISH", C_NASTY_1, text_color=BG_DARK)
-        self.btn_main_menu = Button(W*0.4, H*0.86, W*0.2, H*0.08, "MAIN MENU", GOLD, text_color=BG_DARK)
         self.tourn_inspect_sel = []
         self.faceoff_from_tournament = False
         self.tourn_frozen_lines = []  # cached connection lines for freeze-on-pause
+
+        # --- Analytics State ---
+        self.h2h_matrix = {i: {j: 0 for j in range(12)} for i in range(12)}
+        self.evolution_history = {i: [] for i in range(12)}
+        self.prev_ranks = {}
+        self.tourn_results_view = "OVERVIEW"
+        
+        cx = W // 2
+        bw = int(W * 0.14)
+        gp = int(W * 0.01)
+        self.btn_res_overview = Button(cx - bw*1.5 - gp, H*0.13, bw, H*0.05, "OVERVIEW", GOLD, text_color=BG_DARK)
+        self.btn_res_h2h      = Button(cx - bw*0.5, H*0.13, bw, H*0.05, "H2H MATRIX", BG_CARD)
+        self.btn_res_trends   = Button(cx + bw*0.5 + gp, H*0.13, bw, H*0.05, "TRENDS", BG_CARD)
 
     # ── States ───────────────────────────────────────────────────────────────
     def _draw_menu(self):
@@ -550,6 +562,11 @@ class App:
         self.tourn_math_queue = []
         self.tourn_math_total = 1
         self.tourn_total_points = {i: 0 for i in range(12)}
+        
+        self.h2h_matrix = {i: {j: 0 for j in range(12)} for i in range(12)}
+        self.evolution_history = {i: [] for i in range(12)}
+        self.prev_ranks = {}
+        self.tourn_results_view = "OVERVIEW"
 
     def _draw_tournament(self, dt):
         if self.tourn_paused:
@@ -591,13 +608,25 @@ class App:
         rankings = [(i, cnts[i], sum(p.score for p in self.pop if p.meta_idx == i)) for i in range(12)]
         rankings.sort(key=lambda x: (x[1], x[2]), reverse=True)
         
+        curr_ranks = {item[0]: rank for rank, item in enumerate(rankings)}
+
         ly = sby + H*0.45
         for idx, count, total_sc in rankings:
             if count > 0:
                 cls, ab, nm, clr, _ = STRATEGY_META[idx]
                 pygame.draw.circle(self.screen, clr, (sbx + 30, ly + 10), 8)
                 lt = fonts['md_b'].render(f"{nm}: {count} reps", True, TEXT_WHITE)
-                st = fonts['sm'].render(f"sc: {total_sc}", True, TEXT_DIM)
+                
+                trend_str = ""
+                trend_color = TEXT_DIM
+                if idx in self.prev_ranks and self.tourn_tstate != "REPLICATING":
+                    pr = self.prev_ranks[idx]
+                    cr = curr_ranks[idx]
+                    if cr < pr:     trend_str, trend_color = f" ↑ {pr - cr}", C_NICE_1
+                    elif cr > pr:   trend_str, trend_color = f" ↓ {cr - pr}", C_NASTY_1
+                    else:           trend_str, trend_color = " →", GOLD
+
+                st = fonts['sm'].render(f"sc: {total_sc}{trend_str}", True, trend_color)
                 self.screen.blit(lt, (sbx + 50, ly))
                 self.screen.blit(st, (sbx + sbw - 120, ly+2))
                 ly += H*0.032
@@ -677,6 +706,8 @@ class App:
                     b.score += pb
                     self.tourn_total_points[a.meta_idx] += pa
                     self.tourn_total_points[b.meta_idx] += pb
+                    self.h2h_matrix[a.meta_idx][b.meta_idx] += pa
+                    self.h2h_matrix[b.meta_idx][a.meta_idx] += pb
 
             tt = fonts['xl'].render(f"Evaluating Generation {self.tourn_gen}...", True, GOLD)
             self.screen.blit(tt, tt.get_rect(center=(grid_r.centerx, grid_r.centery - H*0.05)))
@@ -742,6 +773,14 @@ class App:
             self.screen.blit(tt, tt.get_rect(center=(grid_r.centerx, grid_r.bottom - H*0.08)))
             
             if self.tourn_timer > 2.0:
+                ranks_temp = [(j, cnts[j], sum(px.score for px in self.pop if px.meta_idx == j)) for j in range(12)]
+                ranks_temp.sort(key=lambda x: (x[1], x[2]), reverse=True)
+                for rank, item in enumerate(ranks_temp):
+                    self.prev_ranks[item[0]] = rank
+                for i in range(12):
+                    if self.tourn_counts[i] > 0 or cnts[i] > 0:
+                        self.evolution_history[i].append(self.tourn_total_points[i])
+
                 self.tourn_gen += 1; self.tourn_tstate = "PLAYING"; self.tourn_timer = 0.0
                 for p in self.pop: p.state = "IDLE"; p.agent = p.cls()
 
@@ -798,36 +837,114 @@ class App:
 
     def _draw_tourn_results(self):
         self.screen.fill(BG_DARK)
-        tt = fonts['xl'].render("Full Results Dashboard", True, GOLD)
-        self.screen.blit(tt, tt.get_rect(center=(W//2, H*0.08)))
+        self.btn_back.draw(self.screen)
+        tt = fonts['xl'].render("Tournament Analytics Dashboard", True, GOLD)
+        self.screen.blit(tt, tt.get_rect(center=(W//2, H*0.06)))
+
+        self.btn_res_overview.draw(self.screen)
+        self.btn_res_h2h.draw(self.screen)
+        self.btn_res_trends.draw(self.screen)
 
         cnts = {i:0 for i in range(12)}
         for p in self.pop: cnts[p.meta_idx] += 1
-
-        rankings = [(i, cnts[i], self.tourn_total_points[i]) for i in range(12)]
+        rankings = [(i, cnts[i], self.tourn_total_points[i]) for i in range(12) if self.tourn_counts[i] > 0 or cnts[i] > 0]
         rankings.sort(key=lambda x: x[2], reverse=True)
 
-        header_y = H*0.18
-        self.screen.blit(fonts['md_b'].render("Strategy", True, TEXT_DIM), (W*0.25, header_y))
-        self.screen.blit(fonts['md_b'].render("Initial Pop", True, TEXT_DIM), (W*0.5, header_y))
-        self.screen.blit(fonts['md_b'].render("Final Pop", True, TEXT_DIM), (W*0.65, header_y))
-        self.screen.blit(fonts['md_b'].render("Total Points", True, TEXT_DIM), (W*0.8, header_y))
-        pygame.draw.line(self.screen, BG_CARD, (W*0.15, header_y+25), (W*0.9, header_y+25))
+        if self.tourn_results_view == "OVERVIEW":
+            header_y = H*0.21
+            self.screen.blit(fonts['md_b'].render("Strategy", True, TEXT_DIM), (W*0.25, header_y))
+            self.screen.blit(fonts['md_b'].render("Initial Pop", True, TEXT_DIM), (W*0.5, header_y))
+            self.screen.blit(fonts['md_b'].render("Final Pop", True, TEXT_DIM), (W*0.65, header_y))
+            self.screen.blit(fonts['md_b'].render("Total Points", True, TEXT_DIM), (W*0.8, header_y))
+            pygame.draw.line(self.screen, BG_CARD, (W*0.15, header_y+25), (W*0.9, header_y+25))
 
-        y = header_y + 40
-        for idx, f_pop, t_pts in rankings:
-            cls, ab, nm, clr, _ = STRATEGY_META[idx]
-            i_pop = self.tourn_counts[idx]
-            
-            draw_face(self.screen, W*0.2, y+10, int(H*0.025), clr)
-            self.screen.blit(fonts['lg'].render(nm, True, clr), (W*0.24, y))
-            self.screen.blit(fonts['lg'].render(str(i_pop), True, TEXT_WHITE), (W*0.53, y))
-            self.screen.blit(fonts['lg'].render(str(f_pop), True, TEXT_WHITE), (W*0.68, y))
-            self.screen.blit(fonts['lg'].render(str(t_pts), True, GOLD), (W*0.83, y))
-            
-            y += H*0.052
+            y = header_y + 40
+            for idx, f_pop, t_pts in rankings:
+                cls, ab, nm, clr, _ = STRATEGY_META[idx]
+                i_pop = self.tourn_counts[idx]
+                draw_face(self.screen, W*0.2, y+10, int(H*0.025), clr)
+                self.screen.blit(fonts['lg'].render(nm, True, clr), (W*0.24, y))
+                self.screen.blit(fonts['lg'].render(str(i_pop), True, TEXT_WHITE), (W*0.53, y))
+                self.screen.blit(fonts['lg'].render(str(f_pop), True, TEXT_WHITE), (W*0.68, y))
+                self.screen.blit(fonts['lg'].render(str(t_pts), True, GOLD), (W*0.83, y))
+                y += H*0.048
 
-        self.btn_main_menu.draw(self.screen)
+        elif self.tourn_results_view == "H2H":
+            active_ids = [idx for idx, _, _ in rankings]
+            cell_w = min(75, int((W*0.8) / (len(active_ids)+1)))
+            cell_h = min(38, int((H*0.65) / (len(active_ids)+1)))
+            
+            # Center the matrix
+            total_mat_w = (len(active_ids) + 1) * cell_w
+            sx = W//2 - total_mat_w//2
+            sy = H*0.22
+            
+            # Header backgrounds
+            draw_rounded_rect(self.screen, BG_PANEL, pygame.Rect(sx + cell_w, sy, len(active_ids)*cell_w, cell_h), 8)
+            draw_rounded_rect(self.screen, BG_PANEL, pygame.Rect(sx, sy + cell_h, cell_w, len(active_ids)*cell_h), 8)
+
+            for i, c_idx in enumerate(active_ids):
+                ab = STRATEGY_META[c_idx][1]
+                clr = STRATEGY_META[c_idx][3]
+                ct = fonts['sm'].render(ab, True, clr)
+                self.screen.blit(ct, ct.get_rect(center=(sx + (i+1)*cell_w + cell_w//2, sy + cell_h//2)))
+                rt = fonts['sm'].render(ab, True, clr)
+                self.screen.blit(rt, rt.get_rect(center=(sx + cell_w//2, sy + (i+1)*cell_h + cell_h//2)))
+
+            for i, r_idx in enumerate(active_ids):
+                for j, c_idx in enumerate(active_ids):
+                    pts = self.h2h_matrix[r_idx][c_idx]
+                    cx = sx + (j+1)*cell_w
+                    cy = sy + (i+1)*cell_h
+                    
+                    if pts > 0:
+                        draw_rounded_rect(self.screen, BG_ACTIVE, pygame.Rect(cx, cy, cell_w-2, cell_h-2), 4)
+                        pt_t = fonts['sm'].render(str(pts), True, TEXT_WHITE)
+                    else:
+                        draw_rounded_rect(self.screen, BG_DARK, pygame.Rect(cx, cy, cell_w-2, cell_h-2), 4)
+                        pt_t = fonts['sm'].render("-", True, TEXT_DIM)
+                        
+                    self.screen.blit(pt_t, pt_t.get_rect(center=(cx + cell_w//2, cy + cell_h//2)))
+
+        elif self.tourn_results_view == "TRENDS":
+            gx, gy, gw, gh = W*0.12, H*0.25, W*0.65, H*0.55
+            draw_rounded_rect(self.screen, BG_PANEL, pygame.Rect(gx, gy, gw, gh), 16)
+            
+            max_pts = 10
+            for r_idx in range(12):
+                if self.evolution_history[r_idx]:
+                    max_pts = max(max_pts, max(self.evolution_history[r_idx]))
+            
+            active_ids = [idx for idx, _, _ in rankings]
+            for r_idx in active_ids:
+                hist = self.evolution_history[r_idx]
+                if not hist: continue
+                # Prepend 0 for gen 0
+                full_hist = [0] + hist
+                pts_list = []
+                for g_idx, sc in enumerate(full_hist):
+                    px = gx + (g_idx / max(1, len(full_hist)-1)) * gw
+                    py = gy + gh - (sc / max_pts) * gh
+                    pts_list.append((px, py))
+                if len(pts_list) > 1:
+                    pygame.draw.lines(self.screen, STRATEGY_META[r_idx][3], False, pts_list, 4)
+                    # Draw a cute little node at the end
+                    pygame.draw.circle(self.screen, TEXT_WHITE, (int(pts_list[-1][0]), int(pts_list[-1][1])), 4)
+                    
+            # Axes labels
+            self.screen.blit(fonts['sm'].render("Generations", True, TEXT_DIM), (gx + gw//2 - 30, gy + gh + 15))
+            self.screen.blit(fonts['sm'].render("Total", True, TEXT_DIM), (gx - 50, gy + gh//2 - 15))
+            self.screen.blit(fonts['sm'].render("Score", True, TEXT_DIM), (gx - 52, gy + gh//2))
+            
+            # -- Draw Legend --
+            lx, ly = gx + gw + W*0.03, gy + H*0.05
+            self.screen.blit(fonts['md_b'].render("Legend", True, GOLD), (lx, ly))
+            ly += 30
+            for r_idx in active_ids:
+                pygame.draw.rect(self.screen, STRATEGY_META[r_idx][3], (lx, ly, 16, 16), border_radius=4)
+                self.screen.blit(fonts['sm'].render(STRATEGY_META[r_idx][1], True, TEXT_WHITE), (lx + 25, ly - 2))
+                ly += 25
+
 
     # ── Main Loop ────────────────────────────────────────────────────────────
     def run(self):
@@ -912,6 +1029,12 @@ class App:
                                     b.score += pb
                                     self.tourn_total_points[a.meta_idx] += pa
                                     self.tourn_total_points[b.meta_idx] += pb
+                                    self.h2h_matrix[a.meta_idx][b.meta_idx] += pa
+                                    self.h2h_matrix[b.meta_idx][a.meta_idx] += pb
+                            # We need to snapshot evolution history since we instantly finished
+                            for i in range(12):
+                                if self.tourn_counts[i] > 0:
+                                    self.evolution_history[i].append(self.tourn_total_points[i])
                             self.tourn_finish_overlay_timer = 2.0
                         else:
                             self.state = "PODIUM"
@@ -946,8 +1069,32 @@ class App:
                             nl = self.sl_noise.val
                         
                 elif self.state == "TOURN_RESULTS":
-                    if self.btn_main_menu.clicked(ev):
+                    if self.btn_back.clicked(ev):
                         self.state = "MENU"
+                    if self.btn_res_overview.clicked(ev):
+                        self.tourn_results_view = "OVERVIEW"
+                        self.btn_res_overview.color = GOLD
+                        self.btn_res_overview.text_color = BG_DARK
+                        self.btn_res_h2h.color = BG_CARD
+                        self.btn_res_h2h.text_color = TEXT_WHITE
+                        self.btn_res_trends.color = BG_CARD
+                        self.btn_res_trends.text_color = TEXT_WHITE
+                    if self.btn_res_h2h.clicked(ev):
+                        self.tourn_results_view = "H2H"
+                        self.btn_res_h2h.color = GOLD
+                        self.btn_res_h2h.text_color = BG_DARK
+                        self.btn_res_overview.color = BG_CARD
+                        self.btn_res_overview.text_color = TEXT_WHITE
+                        self.btn_res_trends.color = BG_CARD
+                        self.btn_res_trends.text_color = TEXT_WHITE
+                    if self.btn_res_trends.clicked(ev):
+                        self.tourn_results_view = "TRENDS"
+                        self.btn_res_trends.color = GOLD
+                        self.btn_res_trends.text_color = BG_DARK
+                        self.btn_res_overview.color = BG_CARD
+                        self.btn_res_overview.text_color = TEXT_WHITE
+                        self.btn_res_h2h.color = BG_CARD
+                        self.btn_res_h2h.text_color = TEXT_WHITE
 
             if self.state == "MENU": self._draw_menu()
             elif self.state == "FACEOFF_SEL": self._draw_faceoff_select()
