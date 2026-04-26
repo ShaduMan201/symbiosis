@@ -45,20 +45,22 @@ class AgentWrapper:
         self.agent = cls()
         self.score = 0
         
-def run_simulation() -> dict:
+def run_simulation(gens_per_run=None, rounds_per_gen=None) -> dict:
     """Run one single full multi-generational simulation."""
+    gens = gens_per_run if gens_per_run is not None else GENS_PER_RUN
+    rounds = rounds_per_gen if rounds_per_gen is not None else ROUNDS_PER_GEN
     # Build initial population (5 per strategy = 50 total)
     population = []
     for cls in STRAT_MK:
         for _ in range(5):
             population.append(AgentWrapper(cls))
             
-    for _ in range(GENS_PER_RUN):
+    for _ in range(gens):
         # Assign pairs
         random.shuffle(population)
         
-        # 200 rounds per generation
-        for r_idx in range(ROUNDS_PER_GEN):
+        # Rounds per generation
+        for r_idx in range(rounds):
             for i in range(0, 50, 2):
                 a = population[i]
                 b = population[i+1]

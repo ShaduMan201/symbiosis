@@ -14,6 +14,7 @@ import random
 import wave
 import struct
 import io
+import threading
 from typing import List
 
 from agents import (
@@ -140,7 +141,7 @@ class Slider:
             draw_rounded_rect(surf, GOLD, pygame.Rect(self.rect.x, self.rect.y, fw, self.rect.h), radius=self.rect.h//2)
         pygame.draw.circle(surf, TEXT_WHITE, (self.rect.x + fw, self.rect.centery), self.rect.h)
         
-        disp = f"{int(self.val*100)}%" if self.is_pct else f"{self.val:.1f}x"
+        disp = f"{int(self.val*100)}%" if self.is_pct else f"{int(self.val)}"
         txt = fonts['sm'].render(f"{self.label}: {disp}", True, TEXT_WHITE)
         surf.blit(txt, (self.rect.x, self.rect.y - 20))
 
@@ -247,8 +248,9 @@ class App:
         self.btn_back = Button(W*0.02, H*0.03, W*0.08, H*0.045, "<- BACK", BG_CARD)
         
         # Menu
-        self.btn_f_mode = Button(W*0.3, H*0.75, W*0.15, H*0.08, "FACEOFF", C_NICE_4, text_color=BG_DARK)
-        self.btn_t_mode = Button(W*0.55, H*0.75, W*0.15, H*0.08, "TOURNAMENT", C_NASTY_2, text_color=BG_DARK)
+        self.btn_f_mode = Button(W*0.2, H*0.75, W*0.15, H*0.08, "FACEOFF", C_NICE_4, text_color=BG_DARK)
+        self.btn_t_mode = Button(W*0.425, H*0.75, W*0.15, H*0.08, "TOURNAMENT", C_NASTY_2, text_color=BG_DARK)
+        self.btn_b_mode = Button(W*0.65, H*0.75, W*0.15, H*0.08, "BATCH RUN", C_NEUT_1, text_color=BG_DARK)
 
         # Global Setup Sliders (Pushing Noise slider down & right to prevent overlap)
         self.sl_noise = Slider(W*0.35, H*0.77, W*0.3, 10, 0.0, 0.50, 0.05, "Noise (Miscommunication Risk)", is_pct=True)
@@ -304,6 +306,17 @@ class App:
         self.btn_res_h2h      = Button(cx - bw*0.5, H*0.13, bw, H*0.05, "H2H MATRIX", BG_CARD)
         self.btn_res_trends   = Button(cx + bw*0.5 + gp, H*0.13, bw, H*0.05, "TRENDS", BG_CARD)
 
+        self.batch_thread = None
+        self.batch_progress = 0
+        self.batch_results = []
+        self.b_agents = []
+
+        # Batch Setup
+        self.sl_b_runs = Slider(W*0.35, H*0.4, W*0.3, 10, 100, 5000, 1000, "Number of Runs", is_pct=False)
+        self.sl_b_gens = Slider(W*0.35, H*0.5, W*0.3, 10, 5, 200, 50, "Generations per Run", is_pct=False)
+        self.sl_b_rnds = Slider(W*0.35, H*0.6, W*0.3, 10, 10, 1000, 200, "Rounds per Gen", is_pct=False)
+        self.btn_b_start = Button(W*0.4, H*0.8, W*0.2, H*0.05, "START EXPERIMENT", GOLD, text_color=BG_DARK)
+
     # ── States ───────────────────────────────────────────────────────────────
     def _draw_menu(self):
         self.screen.fill(BG_DARK)
@@ -348,6 +361,7 @@ class App:
 
         self.btn_f_mode.draw(self.screen)
         self.btn_t_mode.draw(self.screen)
+        self.btn_b_mode.draw(self.screen)
 
     # ── Faceoff Setup ────────────────────────────────────────────────────────
     def _draw_faceoff_select(self):
@@ -945,6 +959,104 @@ class App:
                 self.screen.blit(fonts['sm'].render(STRATEGY_META[r_idx][1], True, TEXT_WHITE), (lx + 25, ly - 2))
                 ly += 25
 
+    # ── Batch Run States ─────────────────────────────────────────────────────
+    def _draw_batch_setup(self):
+        self.screen.fill(BG_DARK)
+        self.btn_back.draw(self.screen)
+        
+        tt = fonts['xl'].render("BATCH CONFIGURATION", True, TEXT_WHITE)
+        self.screen.blit(tt, tt.get_rect(center=(W//2, H*0.12)))
+        
+        self.sl_b_runs.draw(self.screen)
+        self.sl_b_gens.draw(self.screen)
+        self.sl_b_rnds.draw(self.screen)
+        self.btn_b_start.draw(self.screen)
+
+    def _start_batch_run(self):
+        self.state = "BATCH_RUNNING"
+        self.batch_progress = 0
+        self.batch_results = []
+        
+        b_runs = int(self.sl_b_runs.val)
+        b_gens = int(self.sl_b_gens.val)
+        b_rnds = int(self.sl_b_rnds.val)
+        
+        self.b_agents = []
+        for i in range(12):
+            self.b_agents.append(TAgent(i))
+            
+        def worker():
+            from batch import run_simulation, STRAT_MK
+            history = {cls.__name__: [] for cls in STRAT_MK}
+            for i in range(b_runs):
+                res = run_simulation(gens_per_run=b_gens, rounds_per_gen=b_rnds)
+                for strategy_name in history.keys():
+                    history[strategy_name].append(res.get(strategy_name, 0))
+                self.batch_progress = i + 1
+            
+            from statistics import mean
+            avg_results = [(name, mean(counts), min(counts), max(counts)) for name, counts in history.items()]
+            avg_results.sort(key=lambda x: x[1], reverse=True)
+            self.batch_results = avg_results
+            self.state = "BATCH_RESULTS"
+            self.batch_thread = None
+
+        self.batch_thread = threading.Thread(target=worker, daemon=True)
+        self.batch_thread.start()
+
+    def _draw_batch_running(self, dt):
+        self.screen.fill(BG_DARK)
+        
+        # Draw bouncing idle animation for fun
+        for p in self.b_agents:
+            if random.random() < 0.02:
+                p.state = random.choice(["IDLE", "COOP", "DEFECT"])
+            p.update(dt*2.0)
+            p.draw(self.screen)
+        
+        # Transparent overlay for the UI window
+        s = pygame.Surface((W, H), pygame.SRCALPHA)
+        s.fill((15, 20, 25, 200))
+        self.screen.blit(s, (0,0))
+        
+        tt = fonts['xl'].render("RUNNING BATCH EXPERIMENT", True, GOLD)
+        self.screen.blit(tt, tt.get_rect(center=(W//2, H*0.3)))
+        
+        b_runs = int(self.sl_b_runs.val)
+        pct = self.batch_progress / max(1, b_runs)
+        
+        gx, gy, gw, gh = W*0.2, H*0.5, W*0.6, H*0.05
+        draw_rounded_rect(self.screen, BG_CARD, pygame.Rect(gx, gy, gw, gh), 10)
+        if pct > 0:
+            draw_rounded_rect(self.screen, C_NICE_1, pygame.Rect(gx, gy, int(gw * pct), gh), 10)
+        
+        st = fonts['md_b'].render(f"Simulating {b_runs} runs... ({self.batch_progress}/{b_runs})", True, TEXT_WHITE)
+        self.screen.blit(st, st.get_rect(center=(W//2, gy + gh + H*0.05)))
+
+    def _draw_batch_results(self):
+        self.screen.fill(BG_DARK)
+        self.btn_back.draw(self.screen)
+        
+        tt = fonts['xl'].render("BATCH RUN: Average Final Populations", True, GOLD)
+        self.screen.blit(tt, tt.get_rect(center=(W//2, H*0.12)))
+        
+        gx, gy, gw, gh = W*0.2, H*0.25, W*0.6, H*0.65
+        draw_rounded_rect(self.screen, BG_PANEL, pygame.Rect(gx, gy, gw, gh), 16)
+        
+        # Header
+        lx, cx, rx = gx + W*0.05, gx + W*0.25, gx + W*0.45
+        ly = gy + H*0.05
+        self.screen.blit(fonts['md_b'].render("Strategy", True, TEXT_DIM), (lx, ly))
+        self.screen.blit(fonts['md_b'].render("Avg Final Pop", True, TEXT_DIM), (cx, ly))
+        self.screen.blit(fonts['md_b'].render("Min-Max", True, TEXT_DIM), (rx, ly))
+        pygame.draw.line(self.screen, BG_CARD, (gx + 20, ly + 30), (gx + gw - 20, ly + 30), 2)
+        
+        ly += 50
+        for name, avg, mmin, mmax in self.batch_results:
+            self.screen.blit(fonts['md_b'].render(name, True, TEXT_WHITE), (lx, ly))
+            self.screen.blit(fonts['lg'].render(f"{avg:.2f}", True, C_NICE_4), (cx, ly - 5))
+            self.screen.blit(fonts['sm'].render(f"[{mmin} - {mmax}]", True, TEXT_MUTED), (rx, ly + 5))
+            ly += 40
 
     # ── Main Loop ────────────────────────────────────────────────────────────
     def run(self):
@@ -963,7 +1075,18 @@ class App:
                 if self.state == "MENU":
                     if self.btn_f_mode.clicked(ev): self.state = "FACEOFF_SEL"
                     if self.btn_t_mode.clicked(ev): self.state = "TOURN_SEL"
+                    if self.btn_b_mode.clicked(ev): self.state = "BATCH_SEL"
                     
+                elif self.state == "BATCH_SEL":
+                    if self.btn_back.clicked(ev): self.state = "MENU"
+                    self.sl_b_runs.handle(ev)
+                    self.sl_b_gens.handle(ev)
+                    self.sl_b_rnds.handle(ev)
+                    if self.btn_b_start.clicked(ev): self._start_batch_run()
+
+                elif self.state == "BATCH_RESULTS":
+                    if self.btn_back.clicked(ev): self.state = "MENU"
+
                 elif self.state == "FACEOFF_SEL":
                     if self.btn_back.clicked(ev): self.state = "MENU"; self.fo_sel_A = self.fo_sel_B = None
                     if self.fo_sel_A is not None and self.fo_sel_B is not None:
@@ -1103,6 +1226,9 @@ class App:
             elif self.state == "TOURNAMENT": self._draw_tournament(dt)
             elif self.state == "PODIUM": self._draw_podium(dt)
             elif self.state == "TOURN_RESULTS": self._draw_tourn_results()
+            elif self.state == "BATCH_SEL": self._draw_batch_setup()
+            elif self.state == "BATCH_RUNNING": self._draw_batch_running(dt)
+            elif self.state == "BATCH_RESULTS": self._draw_batch_results()
 
             pygame.display.flip()
 
